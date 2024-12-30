@@ -1,2 +1,7 @@
 # WebAttendanceReward Configuration
 port: 8080
+api-key: "your-secret-key-change-this"  # 이 값을 변경하세요
+allowed-ips:
+  - "127.0.0.1"
+  # 백엔드 서버 IP를 여기에 추가하세요
+  # - "123.456.789.0"

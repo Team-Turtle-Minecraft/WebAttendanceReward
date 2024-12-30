@@ -1,5 +1,6 @@
 package com.dohyeonlee.webattendance.webAttendanceReward;
 
+import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -12,13 +13,18 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
 
 public class WebAttendanceReward extends JavaPlugin {
     private HttpServer server;
+    private String apiKey;
+    private List<String> allowedIps;
 
     @Override
     public void onEnable() {
         saveDefaultConfig(); // config.yml이 없으면 생성
+        loadConfiguration();
         startWebServer();
         getLogger().info("WebAttendanceReward enabled!");
     }
@@ -29,6 +35,18 @@ public class WebAttendanceReward extends JavaPlugin {
             server.stop(0);
         }
         getLogger().info("WebAttendanceReward disabled!");
+    }
+
+    private void loadConfiguration() {
+        apiKey = getConfig().getString("api-key", "your-secret-key");
+        allowedIps = getConfig().getStringList("allowed-ips");
+
+        // 설정이 비어있으면 기본값 설정
+        if (allowedIps.isEmpty()) {
+            allowedIps = Arrays.asList("127.0.0.1");
+            getConfig().set("allowed-ips", allowedIps);
+            saveConfig();
+        }
     }
 
     private void startWebServer() {
@@ -47,11 +65,55 @@ public class WebAttendanceReward extends JavaPlugin {
     class CommandHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            if ("POST".equals(exchange.getRequestMethod())) {
+            try {
+                // IP 체크
+                String clientIp = exchange.getRemoteAddress().getAddress().getHostAddress();
+                if (!allowedIps.contains(clientIp)) {
+                    String response = "Forbidden: IP not allowed";
+                    exchange.sendResponseHeaders(403, response.getBytes().length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
+                    return;
+                }
+
+                // API 키 체크
+                Headers headers = exchange.getRequestHeaders();
+                if (!headers.containsKey("X-API-Key") ||
+                        !headers.getFirst("X-API-Key").equals(apiKey)) {
+                    String response = "Unauthorized: Invalid API key";
+                    exchange.sendResponseHeaders(401, response.getBytes().length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
+                    return;
+                }
+
+                // POST 메소드 체크
+                if (!"POST".equals(exchange.getRequestMethod())) {
+                    String response = "Method not allowed";
+                    exchange.sendResponseHeaders(405, response.getBytes().length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
+                    return;
+                }
+
+                // 명령어 실행
                 InputStreamReader isr = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8);
                 BufferedReader br = new BufferedReader(isr);
                 String command = br.readLine();
 
+                if (command == null || command.trim().isEmpty()) {
+                    String response = "Empty command";
+                    exchange.sendResponseHeaders(400, response.getBytes().length);
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
+                    return;
+                }
+
+                // 메인 스레드에서 명령어 실행
                 Bukkit.getScheduler().runTask(WebAttendanceReward.this, () -> {
                     Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
                 });
@@ -61,9 +123,11 @@ public class WebAttendanceReward extends JavaPlugin {
                 try (OutputStream os = exchange.getResponseBody()) {
                     os.write(response.getBytes());
                 }
-            } else {
-                String response = "Only POST requests are allowed";
-                exchange.sendResponseHeaders(405, response.getBytes().length);
+
+            } catch (Exception e) {
+                e.printStackTrace();
+                String response = "Internal server error";
+                exchange.sendResponseHeaders(500, response.getBytes().length);
                 try (OutputStream os = exchange.getResponseBody()) {
                     os.write(response.getBytes());
                 }
