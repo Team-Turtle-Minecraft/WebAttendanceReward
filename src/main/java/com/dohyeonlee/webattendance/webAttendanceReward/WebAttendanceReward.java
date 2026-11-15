@@ -15,6 +15,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 public class WebAttendanceReward extends JavaPlugin {
     private HttpServer server;
@@ -23,7 +24,7 @@ public class WebAttendanceReward extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        saveDefaultConfig(); // config.yml이 없으면 생성
+        saveDefaultConfig();
         loadConfiguration();
         startWebServer();
         getLogger().info("WebAttendanceReward enabled!");
@@ -41,7 +42,6 @@ public class WebAttendanceReward extends JavaPlugin {
         apiKey = getConfig().getString("api-key", "your-secret-key");
         allowedIps = getConfig().getStringList("allowed-ips");
 
-        // 설정이 비어있으면 기본값 설정
         if (allowedIps.isEmpty()) {
             allowedIps = Arrays.asList("127.0.0.1");
             getConfig().set("allowed-ips", allowedIps);
@@ -69,11 +69,7 @@ public class WebAttendanceReward extends JavaPlugin {
                 // IP 체크
                 String clientIp = exchange.getRemoteAddress().getAddress().getHostAddress();
                 if (!allowedIps.contains(clientIp)) {
-                    String response = "Forbidden: IP not allowed";
-                    exchange.sendResponseHeaders(403, response.getBytes().length);
-                    try (OutputStream os = exchange.getResponseBody()) {
-                        os.write(response.getBytes());
-                    }
+                    sendResponse(exchange, 403, "Forbidden: IP not allowed");
                     return;
                 }
 
@@ -81,56 +77,64 @@ public class WebAttendanceReward extends JavaPlugin {
                 Headers headers = exchange.getRequestHeaders();
                 if (!headers.containsKey("X-API-Key") ||
                         !headers.getFirst("X-API-Key").equals(apiKey)) {
-                    String response = "Unauthorized: Invalid API key";
-                    exchange.sendResponseHeaders(401, response.getBytes().length);
-                    try (OutputStream os = exchange.getResponseBody()) {
-                        os.write(response.getBytes());
-                    }
+                    sendResponse(exchange, 401, "Unauthorized: Invalid API key");
                     return;
                 }
 
                 // POST 메소드 체크
                 if (!"POST".equals(exchange.getRequestMethod())) {
-                    String response = "Method not allowed";
-                    exchange.sendResponseHeaders(405, response.getBytes().length);
-                    try (OutputStream os = exchange.getResponseBody()) {
-                        os.write(response.getBytes());
-                    }
+                    sendResponse(exchange, 405, "Method not allowed");
                     return;
                 }
 
-                // 명령어 실행
+                // 명령어 읽기
                 InputStreamReader isr = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8);
                 BufferedReader br = new BufferedReader(isr);
                 String command = br.readLine();
 
                 if (command == null || command.trim().isEmpty()) {
-                    String response = "Empty command";
-                    exchange.sendResponseHeaders(400, response.getBytes().length);
-                    try (OutputStream os = exchange.getResponseBody()) {
-                        os.write(response.getBytes());
-                    }
+                    sendResponse(exchange, 400, "Empty command");
                     return;
                 }
 
+                // CompletableFuture를 사용하여 명령어 실행 결과를 기다림
+                CompletableFuture<Boolean> future = new CompletableFuture<>();
+
                 // 메인 스레드에서 명령어 실행
                 Bukkit.getScheduler().runTask(WebAttendanceReward.this, () -> {
-                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+                    try {
+                        boolean success = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+                        future.complete(success);
+                    } catch (Exception e) {
+                        future.completeExceptionally(e);
+                    }
                 });
 
-                String response = "Command executed: " + command;
-                exchange.sendResponseHeaders(200, response.getBytes().length);
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(response.getBytes());
+                // 명령어 실행 결과 기다리기
+                try {
+                    boolean success = future.get();
+                    if (success) {
+                        sendResponse(exchange, 200, "Request has been successfully processed");
+                    } else {
+                        sendResponse(exchange, 500, "Command execution failed");
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    sendResponse(exchange, 500, "Internal server error");
                 }
 
             } catch (Exception e) {
                 e.printStackTrace();
-                String response = "Internal server error";
-                exchange.sendResponseHeaders(500, response.getBytes().length);
-                try (OutputStream os = exchange.getResponseBody()) {
-                    os.write(response.getBytes());
-                }
+                sendResponse(exchange, 500, "Internal server error");
+            }
+        }
+
+        private void sendResponse(HttpExchange exchange, int statusCode, String response) throws IOException {
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            byte[] responseBytes = response.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(statusCode, responseBytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(responseBytes);
             }
         }
     }
